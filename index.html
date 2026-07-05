@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>景点留念合影</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #f0f0f0; display: flex; justify-content: center; align-items: center; min-height: 100vh; font-family: sans-serif; }
+    .container { max-width: 500px; width: 100%; padding: 20px; text-align: center; }
+    .bg-preview { width: 100%; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); margin-bottom: 20px; }
+    button, .upload-btn { 
+      background: #2b7a4b; color: white; border: none; padding: 12px 24px; 
+      border-radius: 30px; font-size: 18px; margin: 10px 5px; cursor: pointer;
+      display: inline-block; transition: 0.2s;
+    }
+    button:active { transform: scale(0.96); }
+    .upload-btn { background: #4a90e2; }
+    #fileInput { display: none; }
+    .canvas-container { position: relative; margin: 20px auto; display: none; }
+    #outputCanvas { width: 100%; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+    .loading { display: none; margin: 15px 0; color: #555; }
+    .note { font-size: 14px; color: #666; margin-top: 15px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2 style="margin-bottom: 10px;">🏞️ 景点留念合影</h2>
+    <!-- 背景图使用同仓库的 scenery.jpg，彻底解决跨域问题 -->
+    <img id="bgImage" class="bg-preview" src="scenery.jpg" alt="景区风光">
+    <p style="color:#555;">上传你的照片，一键生成合影</p>
+    
+    <label for="fileInput" class="upload-btn">📷 选择个人照片</label>
+    <input type="file" id="fileInput" accept="image/*">
+    
+    <button id="mergeBtn" disabled>✨ 一键合影</button>
+    <button id="downloadBtn" disabled>💾 保存合影</button>
+    
+    <div class="loading" id="loading">⏳ 正在智能抠图中...</div>
+    <div class="canvas-container" id="canvasContainer">
+      <canvas id="outputCanvas"></canvas>
+    </div>
+    <p class="note">长按图片即可保存到手机相册</p>
+  </div>
+
+  <!-- 引入 MediaPipe 人像分割库 -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
+  <script>
+    const bgImage = document.getElementById('bgImage');
+    const fileInput = document.getElementById('fileInput');
+    const mergeBtn = document.getElementById('mergeBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const canvas = document.getElementById('outputCanvas');
+    const canvasContainer = document.getElementById('canvasContainer');
+    const loadingDiv = document.getElementById('loading');
+    const ctx = canvas.getContext('2d');
+
+    let userImage = null;
+    let sceneryImage = null;
+    let finalComposite = null;
+
+    // 加载景区背景图（同源，无需 crossorigin）
+    function loadScenery() {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.src = bgImage.src;
+        img.onload = () => { sceneryImage = img; resolve(); };
+        img.onerror = () => reject(new Error('景区图片加载失败，请确认仓库中有 scenery.jpg'));
+      });
+    }
+
+    // 初始化人像分割
+    let selfieSegmentation;
+    async function initSegmentation() {
+      selfieSegmentation = new SelfieSegmentation({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`
+      });
+      selfieSegmentation.setOptions({ modelSelection: 1 }); // 通用模型
+      await selfieSegmentation.initialize();
+    }
+
+    // 用户选择照片
+    fileInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const img = new Image();
+        img.src = ev.target.result;
+        img.onload = () => {
+          userImage = img;
+          mergeBtn.disabled = false;
+          canvasContainer.style.display = 'none';
+          downloadBtn.disabled = true;
+        };
+      };
+      reader.readAsDataURL(file);
+    });
+
+    // 抠图：返回蒙版 ImageData
+    async function segmentPerson(imageElement) {
+      const offCanvas = document.createElement('canvas');
+      offCanvas.width = imageElement.width;
+      offCanvas.height = imageElement.height;
+      const offCtx = offCanvas.getContext('2d');
+      offCtx.drawImage(imageElement, 0, 0);
+      await selfieSegmentation.send({ image: offCanvas });
+      const mask = selfieSegmentation.segmentationMask;
+      const maskCanvas = document.createElement('canvas');
+      maskCanvas.width = mask.width;
+      maskCanvas.height = mask.height;
+      const maskCtx = maskCanvas.getContext('2d');
+      maskCtx.drawImage(mask, 0, 0, mask.width, mask.height);
+      return maskCtx.getImageData(0, 0, mask.width, mask.height);
+    }
+
+    // 合成合影
+    function compositeImages(scenery, person, maskData) {
+      const compCanvas = document.createElement('canvas');
+      compCanvas.width = scenery.width;
+      compCanvas.height = scenery.height;
+      const compCtx = compCanvas.getContext('2d');
+      compCtx.drawImage(scenery, 0, 0);
+      
+      const personScale = 0.45;  // 人像缩放比例，可根据需要调整
+      const personWidth = person.width * personScale;
+      const personHeight = person.height * personScale;
+      const personX = (scenery.width - personWidth) / 2;
+      const personY = scenery.height - personHeight - 40;
+      
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = person.width;
+      tempCanvas.height = person.height;
+      const tempCtx = tempCanvas.getContext('2d');
+      tempCtx.drawImage(person, 0, 0);
+      
+      const personImageData = tempCtx.getImageData(0, 0, person.width, person.height);
+      const personData = personImageData.data;
+      const maskDataArray = maskData.data;
+      
+      for (let i = 0; i < personData.length; i += 4) {
+        personData[i + 3] = maskDataArray[i]; // 用蒙版亮度作为 alpha
+      }
+      tempCtx.putImageData(personImageData, 0, 0);
+      compCtx.drawImage(tempCanvas, personX, personY, personWidth, personHeight);
+      return compCanvas.toDataURL('image/png');
+    }
+
+    // 一键合影按钮
+    mergeBtn.addEventListener('click', async () => {
+      if (!userImage || !sceneryImage) return;
+      mergeBtn.disabled = true;
+      loadingDiv.style.display = 'block';
+      try {
+        const mask = await segmentPerson(userImage);
+        const dataUrl = compositeImages(sceneryImage, userImage, mask);
+        finalComposite = dataUrl;
+        const img = new Image();
+        img.onload = () => {
+          canvas.width = img.width;
+          canvas.height = img.height;
+          ctx.drawImage(img, 0, 0);
+          canvasContainer.style.display = 'block';
+          downloadBtn.disabled = false;
+          loadingDiv.style.display = 'none';
+          mergeBtn.disabled = false;
+        };
+        img.src = dataUrl;
+      } catch (err) {
+        alert('合成失败，请重试。确保景区图片已正确上传。');
+        console.error(err);
+        loadingDiv.style.display = 'none';
+        mergeBtn.disabled = false;
+      }
+    });
+
+    // 保存合影
+    downloadBtn.addEventListener('click', () => {
+      if (!finalComposite) return;
+      const link = document.createElement('a');
+      link.download = '景点合影.png';
+      link.href = finalComposite;
+      link.click();
+    });
+
+    // 页面启动
+    (async () => {
+      try {
+        await loadScenery();
+        await initSegmentation();
+        console.log('系统就绪，请上传照片');
+      } catch (e) {
+        alert('初始化失败：' + e.message);
+        console.error(e);
+      }
+    })();
+  </script>
+</body>
+</html>
